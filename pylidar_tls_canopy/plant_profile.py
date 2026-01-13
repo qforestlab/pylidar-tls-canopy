@@ -10,10 +10,12 @@ October 2022
 """
 
 import sys
+import os
 import warnings
 import numpy as np
 import pandas as pd
 from numba import njit
+import laspy
 
 import statsmodels.api as sm
 
@@ -94,25 +96,125 @@ class Jupp2009:
             sys.exit()
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
+    def add_helios_scan_position(self, path_points, path_pulse, sensor_height=None, method='WEIGHTED',
+                                 min_zenith=5, max_zenith=70):
+        """
+        Add a Helios scan position to the profile
+
+        Args:
+            path_points: Path to Helios points file (.las)
+            path_pulse: Path to Helios pulse file (.txt)
+            sensor_height: Height of sensor above ground (if ground plane not set)
+            method: Method for weighting multiple returns ('WEIGHTED','FIRST','FIRSTLAST','ALL')
+            min_zenith: Minimum zenith angle (degrees)
+            max_zenith: Maximum zenith angle (degrees)
+        """
+        # Zenith range from degrees to radians
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
+
+        # Read points
+        if not os.path.exists(path_points):
+            raise FileNotFoundError(f'Helios points file {path_points} not found')
+        las = laspy.read(path_points)
+        points = {}
+        points['x'] = las.X * las.header.scale[0] + las.header.offsets[0]
+        points['y'] = las.Y * las.header.scale[1] + las.header.offsets[1]
+        points['z'] = las.Z * las.header.scale[2] + las.header.offsets[2]
+        points['target_count'] = np.array(las.number_of_returns)
+        points['target_index'] = np.array(las.return_number)
+        point_id = np.array(las.fullwaveIndex).astype(np.int32) 
+
+        # Make sure points are sorted by point id
+        sort_idx = np.argsort(point_id)
+        point_id = point_id[sort_idx]
+        for key in points.keys():
+            points[key] = points[key][sort_idx]
+
+        # Read pulses
+        if not os.path.exists(path_pulse):
+            raise FileNotFoundError(f'Helios points file {path_pulse} not found')
+        puls_arr = np.loadtxt(path_pulse)
+        pulses = {}
+        pulses['zenith'] = np.arccos(puls_arr[:, 5])  # angle from z axis
+        pulses['azimuth'] = np.arctan2(puls_arr[:, 4], puls_arr[:, 3])  # angle from x axis towards y
+        # Convert azimuth from [-π, π] to [0, 2π]
+        pulses['azimuth'] = np.where(pulses['azimuth'] < 0, pulses['azimuth'] + 2*np.pi, pulses['azimuth'])
+        pulse_id = puls_arr[:, 7].astype(np.int64) # ids are not sorted
+
+        # Sort pulses by pulse id
+        sort_idx = np.argsort(pulse_id)
+        pulse_id = pulse_id[sort_idx]
+        for key in pulses.keys():
+            pulses[key] = pulses[key][sort_idx]
+
+        # Find corresponding pulse id for each point id
+        pos = np.searchsorted(pulse_id, point_id)
+        valid = (pos < len(pulse_id)) & (pulse_id[pos] == point_id)
+
+        # Remove points with no matching pulse
+        for key in points.keys():
+            points[key] = points[key][valid]
+        point_id = point_id[valid]
+
+        # Add pulse zenith and azimuth to points
+        points['azimuth'] = pulses['azimuth'][pos[valid]]
+        points['zenith'] = pulses['zenith'][pos[valid]]
+
+        # Find number of returns per pulse
+        pulses['target_count'] = np.zeros(pulse_id.shape[0], dtype=np.uint8)
+        pos = np.searchsorted(point_id, pulse_id)
+        pos[pos >= len(point_id)] = 0 # searchsorted may produce positions in point_id that are larger than possible -> give these 0 index of 0 (they won't be 'valid' then)
+        valid = point_id[pos] == pulse_id
+        pulses['target_count'][valid] = pos[valid] 
+
+        # Filter on zenith
+        idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
+        for key in pulses.keys():
+            pulses[key] = pulses[key][idx]
+        idx = (points['zenith'] >= min_zenith_r) & (points['zenith'] < max_zenith_r)
+        for key in points.keys():
+            points[key] = points[key][idx]
+
+        # Get point height
+        if self.ground_plane is None:
+            height = points['z'] - sensor_height if sensor_height is not None else points['z']
+        else: 
+            height = points['z'] - (self.ground_plane[1] * points['x'] +
+                self.ground_plane[2] * points['y'] + self.ground_plane[0])
+
+        print("Adding pulses")
+        self.add_shots(pulses['target_count'], pulses['zenith'], pulses['azimuth'], method=method)
+        
+        print("Adding points")
+        self.add_targets(height, points['target_index'], points['target_count'], points['zenith'],
+            points['azimuth'], method=method)
+                                 
+
     def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, sensor_height=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
+        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
         """
         Add a RIEGL scan position to the profile
         """
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
-        pulse_cols = ['zenith','azimuth','target_count']
+
+        pulse_cols = ['zenith','azimuth','target_count', 'scanline', 'scanline_idx']
         point_cols = ['x','y','z','range','target_index',
-                      'zenith','azimuth','target_count']
+                      'zenith','azimuth','target_count', 'scanline', 'scanline_idx']
+        
+        print("Reading RXP and optionally RDBX")
 
         pulses = {}
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
             for col in pulse_cols:
                 pulses[col] = rxp.get_data(col, return_as_point_attribute=False)
             idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
-            if np.any(idx):
-                self.add_shots(pulses['target_count'][idx], pulses['zenith'][idx],
-                    pulses['azimuth'][idx], method=method)
+            if not np.any(idx):
+                print("No pulses in given zenith range, exiting.")
+                sys.exit()
+            for col in pulse_cols:
+                pulses[col] = pulses[col][idx]
 
             points = {}
             if rdbx_file:
@@ -136,15 +238,61 @@ class Jupp2009:
         else: 
             height = points['z'] - (self.ground_plane[1] * points['x'] +
                 self.ground_plane[2] * points['y'] + zoffset)
+            
+        print("Filtering points")
         
-        idx = (points['zenith'] >= min_zenith_r) & (points['zenith'] < max_zenith_r)
+        # filter points on scanline and scanline_idx of pulses to ensure alignment
+        df_points = pd.DataFrame({'scanline': points["scanline"], 'scanline_idx': points["scanline_idx"]})
+        df_pulses = pd.DataFrame({'scanline': pulses["scanline"], 'scanline_idx': pulses["scanline_idx"], 'zenith': pulses["zenith"], 'azimuth': pulses["azimuth"]})
+        df_points['orig_index'] = np.arange(len(df_points))
+
+        # check if scanline in rdbx is in reverse (not sure if this is due to rotation of scanner or just bug)
+        min_scanline_rdbx = df_points["scanline"].min()
+        if min_scanline_rdbx < -1:
+            # if inverted, shift rdbx
+            df_points[["scanline"]] = df_points[["scanline"]] + abs(df_points[["scanline"]].min())
+            max_scanline = df_points[["scanline"]].to_numpy().max()
+            # then invert rxp scanline + shift
+            df_pulses[["scanline"]] = df_pulses[["scanline"]]*(-1)
+            df_pulses[["scanline"]] = df_pulses[["scanline"]] + max_scanline
+
+        # inner join keeps only matches
+        matched = df_points.merge(df_pulses, on=['scanline', 'scanline_idx'], how='inner')
+        idx = np.zeros(len(df_points), dtype=bool)
+        idx[matched['orig_index'].values] = True
+
+        if not np.any(idx):
+            print("No pulses in given zenith range, exiting.")
+            sys.exit()
+        for col in point_cols:
+            points[col] = points[col][idx]
+        height = height[idx]
+
+        # change zenith and azimuth of points to values of corresponding pulses
+        matched_sorted = matched.sort_values('orig_index')
+        zenith_pulses = matched_sorted['zenith'].to_numpy()
+        azimuth_pulses = matched_sorted['azimuth'].to_numpy()
+        points["zenith"] = zenith_pulses
+        points["azimuth"] = azimuth_pulses
+
         if max_hr is not None:
             hr = points['range'] * np.sin(points['zenith'])
             idx &= hr < max_hr
-        if np.any(idx):
-            self.add_targets(height[idx], points['target_index'][idx], 
-                points['target_count'][idx], points['zenith'][idx],
-                points['azimuth'][idx], method=method)
+            # filter seperatly to zenith, less efficient but avoids some problems
+            if not np.any(idx):
+                print("No pulses in given range, exiting.")
+                sys.exit()
+            for col in point_cols:
+                points[col] = points[col][idx]
+            height = height[idx]
+
+        print("Adding pulses")
+        self.add_shots(pulses['target_count'], pulses['zenith'],
+                    pulses['azimuth'], method=method)
+        print("Adding points")
+        self.add_targets(height, points['target_index'], 
+            points['target_count'], points['zenith'],
+            points['azimuth'], method=method)
 
     def add_leaf_scan_position(self, leaf_file, method='FIRSTLAST', min_zenith=5, 
         max_zenith=70, sensor_height=None, zenith_offset=0):
@@ -192,6 +340,7 @@ class Jupp2009:
         mina = min_azimuth - self.ares / 2
         maxa = max_azimuth + self.ares / 2
         idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)
+
         if invert:
             idx = ~idx
 
@@ -199,15 +348,15 @@ class Jupp2009:
             warnings.simplefilter('ignore', category=RuntimeWarning)
             cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
         
-        self.pgap_theta_z = 1 - cover_theta_z 
-
+        self.pgap_theta_z = 1 - cover_theta_z
+    
     def calcLinearPlantProfiles(self, calc_mla=False):
         """
         Calculate the linear model PAI (see Jupp et al., 2009)
         """
         zenith_bin_r = np.radians(self.zenith_bin)
         kthetal = np.full(self.pgap_theta_z.shape, np.log(1e-5), dtype=float)
-        np.log(self.pgap_theta_z, out=kthetal, where=self.pgap_theta_z>0)
+        np.log(self.pgap_theta_z, out=kthetal, where=self.pgap_theta_z > 1e-5) #changed 0 to 1e-5
         xtheta = np.abs(2 * np.tan(zenith_bin_r) / np.pi)
         paiv = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)
         paih = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)
@@ -243,7 +392,7 @@ class Jupp2009:
         pai_lim = np.log(1e-5)
         tmp = np.full(self.pgap_theta_z.shape[1], pai_lim)
         np.log(self.pgap_theta_z[hingeindex,:], out=tmp, 
-            where=self.pgap_theta_z[hingeindex,:] > 0)
+            where=self.pgap_theta_z[hingeindex,:] > 1e-5) #changed 0 to 1e-5
         
         pai = -1.1 * tmp
 
@@ -263,8 +412,8 @@ class Jupp2009:
         for i in range(zenith_bin_r.shape[0]):
             if (self.pgap_theta_z[i,-1] < 1):
                 num = np.full(self.pgap_theta_z.shape[1], pai_lim)
-                np.log(self.pgap_theta_z[i,:], out=num, where=self.pgap_theta_z[i,:] > 0)
-                den = np.log(self.pgap_theta_z[i,-1]) if (self.pgap_theta_z[i,-1] > 0) else pai_lim
+                np.log(self.pgap_theta_z[i,:], out=num, where=self.pgap_theta_z[i,:] > 1e-5) #changed 0 to 1e-5
+                den = np.log(self.pgap_theta_z[i,-1]) if (self.pgap_theta_z[i,-1] > 1e-5) else pai_lim #changed 0 to 1e-5
                 ratio += wn[i] * num / den
 
         if total_pai is None:
@@ -290,11 +439,13 @@ class Jupp2009:
         Write out the vertical plant profiles to file
         """
         linear_pai,linear_mla = self.calcLinearPlantProfiles(calc_mla=True)
-        plant_profiles = {'Height': self.height_bin,
-                          'HingePAI': self.calcHingePlantProfiles(),
-                          'LinearPAI': linear_pai,
-                          'LinearMLA': linear_mla,       
-                          'WeightedPAI': self.calcSolidAnglePlantProfiles()}
+        plant_profiles = {
+            'Height': self.height_bin,
+            'HingePAI': self.calcHingePlantProfiles(),
+            'LinearPAI': linear_pai,
+            'LinearMLA': linear_mla,       
+            'WeightedPAI': self.calcSolidAnglePlantProfiles()
+        }
         
         plant_profiles['HingePAVD'] = self.get_pavd(plant_profiles['HingePAI'])
         plant_profiles['LinearPAVD'] = self.get_pavd(plant_profiles['LinearPAI'])
@@ -346,6 +497,39 @@ def get_min_z_grid(riegl_files, transform_files, grid_extent, grid_resolution,
         minx = grid_origin[0] - grid_extent / 2
         maxy = grid_origin[1] + grid_extent / 2
         min_z_grid(x, y, z, r, minx, maxy, grid_resolution, outgrid, valid)
+    x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid],
+               outgrid[2,:,:][valid], outgrid[3,:,:][valid])
+    return x,y,z,r
+
+
+def get_min_z_grid_helios(path_points, path_trajectory, grid_extent, grid_resolution):
+    """
+    Wrapper function a minimum z grid for input to the ground plane fitting
+
+    Wouter: Adapted to work for helios simulated point clouds 
+    """
+    if not os.path.exists(path_points):
+        raise FileNotFoundError(f'Helios points file {path_points} not found')
+    if not os.path.exists(path_trajectory):
+        raise FileNotFoundError(f'Helios trajectory file {path_trajectory} not found')
+    
+    ncols = nrows = int(grid_extent // grid_resolution) + 1
+    outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
+    valid = np.zeros((nrows,ncols), dtype=bool)
+    
+    # Read points and trajectory
+    las = laspy.read(path_points)
+    traj = np.loadtxt(path_trajectory)  
+
+    # Get points and range
+    x = las.X * las.header.scale[0] + las.header.offsets[0]
+    y = las.Y * las.header.scale[1] + las.header.offsets[1]
+    z = las.Z * las.header.scale[2] + las.header.offsets[2]
+    r = np.sqrt((x - traj[0,0])**2 + (y - traj[0,1])**2 + (z - traj[0,2])**2) # assuming first line has beam origin
+
+    minx = traj[0,0] - grid_extent / 2
+    maxy = traj[0,1] + grid_extent / 2
+    min_z_grid(x, y, z, r, minx, maxy, grid_resolution, outgrid, valid)
     x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid],
                outgrid[2,:,:][valid], outgrid[3,:,:][valid])
     return x,y,z,r
@@ -468,4 +652,3 @@ def plane_fit_hubers(x, y, z, w=None, reportfile=None):
                     f.write(f'{k:}:\n{v:}\n')
     
     return output
-
