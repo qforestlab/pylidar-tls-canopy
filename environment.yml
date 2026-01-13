@@ -4,7 +4,7 @@ channels:
   - conda-forge
 dependencies:
   - python>=3.10
-  - numpy
+  - numpy<2.0
   - numba
   - pandas
   - scipy
@@ -18,9 +18,11 @@ dependencies:
   - statsmodels
   - cxx-compiler
   - pip
-  - pip:
-    - -e .
+  # - pip:
+    # - -e .
 variables:
-  RIVLIB_ROOT: /gpfs/data1/vclgp/software/rivlib-2_6_0-x86_64-linux-gcc9
-  RDBLIB_ROOT: /gpfs/data1/vclgp/software/rdblib-2.4.0-x86_64-linux
+  RIVLIB: /Stor1/wouter/software/riegl/libs/rivlib-2_8_0-x86_64-linux-gcc13
+  RDBLIB: /Stor1/wouter/software/riegl/libs/rdblib-2.4.3-x86_64-linux
+  RIVLIB_ROOT: /Stor1/wouter/software/riegl/libs/rivlib-2_8_0-x86_64-linux-gcc13
+  RDBLIB_ROOT: /Stor1/wouter/software/riegl/libs/rdblib-2.4.3-x86_64-linux
   PYLIDAR_CXX_FLAGS: -std=c++11 

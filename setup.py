@@ -6,10 +6,23 @@ import os
 import sys
 import numpy
 import ctypes
-import pylidar_tls_canopy
 from setuptools import Extension,setup
+from pathlib import Path
+import re
 
 NUMPY_MACROS = ('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')
+
+
+def read_version():
+    """Read __version__ from the package __init__.py without importing it."""
+    init_path = Path(__file__).parent / "pylidar_tls_canopy" / "__init__.py"
+    if init_path.exists():
+        text = init_path.read_text()
+        match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
+        if match:
+            return match.group(1)
+    return "0.0.0"
+
 
 def getExtraCXXFlags():
     """
@@ -144,7 +157,7 @@ if len(externalModules) == 0:
     print('RiVLib and/or RDBLib not found. Only the LEAF and RDBX (if installed) drivers will be available.')
 
 setup(name='pylidar-tls-canopy',
-      version=pylidar_tls_canopy.__version__,
+      version=read_version(),
       author='John Armston',
       author_email='armston@umd.edu',
       packages=['pylidar_tls_canopy','pylidar_tls_canopy.cmd'],
