@@ -156,8 +156,10 @@ class Jupp2009:
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
         pulse_cols = ['zenith','azimuth','target_count', 'scanline', 'scanline_idx']
-        point_cols = ['x','y','z','range','target_index',
-                      'zenith','azimuth','target_count', 'scanline', 'scanline_idx']
+        point_cols = ['x','y','z','range','target_index', 'reflectance', 'amplitude',
+                      'zenith','azimuth','target_count', 'scanline', 'scanline_idx', 'deviation']
+        
+        print("Reading RXP and optionally RDBX")
 
         pulses = {}
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
@@ -192,7 +194,9 @@ class Jupp2009:
         else: 
             height = points['z'] - (self.ground_plane[1] * points['x'] +
                 self.ground_plane[2] * points['y'] + zoffset)
-        
+            
+        print("Filtering points")
+
         # filter points on scanline and scanline_idx of pulses to ensure alignment
         df_points = pd.DataFrame({'scanline': points["scanline"], 'scanline_idx': points["scanline_idx"]})
         df_pulses = pd.DataFrame({'scanline': pulses["scanline"], 'scanline_idx': pulses["scanline_idx"], 'zenith': pulses["zenith"], 'azimuth': pulses["azimuth"]})
@@ -231,14 +235,20 @@ class Jupp2009:
             hr = points['range'] * np.sin(points['zenith'])
             idx &= hr < max_hr
             if not np.any(idx):
+                # filter seperatly to zenith, less efficient but avoids some problems
                 print("No pulses in given range, exiting.")
                 sys.exit()
             for col in point_cols:
                 points[col] = points[col][idx]
             height = height[idx]
+            
+        self.points = points
 
+        print("Adding pulses")
         self.add_shots(pulses['target_count'], pulses['zenith'],
                     pulses['azimuth'], method=method)
+        
+        print(f"Adding points with {method} weighting")
         self.add_targets(height, points['target_index'], 
             points['target_count'], points['zenith'],
             points['azimuth'], method=method)
