@@ -307,6 +307,47 @@ class Jupp2009:
             cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
         
         self.pgap_theta_z = 1 - cover_theta_z 
+        
+            
+    def get_pgap_theta_z_sector(self, start_azimuth=0, stop_azimuth=360, invert=False):
+        """
+        Get the Pgap by zenith and height bin for a given azimuth bin range by sector
+        """
+        cover_theta_z = np.full(self.target_output.shape, np.nan, dtype=float)
+        np.divide(
+            np.cumsum(self.target_output, axis=2),
+            self.shot_output,
+            out=cover_theta_z,
+            where=self.shot_output > 0
+        )
+
+        # Expand requested sector by half an azimuth bin so "start/stop" behave like edges
+        
+        mina = start_azimuth - self.ares / 2
+        maxa = stop_azimuth + self.ares / 2
+
+        # Decide wrap from the ORIGINAL bounds (start/stop), not the padded ones
+        if start_azimuth <= stop_azimuth:
+            # here the sector does not wrap
+            # say it is from 50 to 90
+            # mina = 45, maxa = 95
+            # all the azimuth bins > 45 AND all the azimuth bins < 95
+            idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)
+        else:
+            # here the sector does wraps
+            # say it is from 350 to 30 (or 390)
+            # mina = 345, maxa = 35 (or 395)
+            # all the azimuth bins > 345 (that is 345 to 360) OR all the azimuth bins < 35 (that is 0 to 35)
+            idx = (self.azimuth_bin >= mina) | (self.azimuth_bin < maxa)
+
+        if invert:
+            idx = ~idx
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            cover_mean = np.nanmean(cover_theta_z[:, idx, :], axis=1)
+
+        self.pgap_theta_z = 1 - cover_mean 
 
     def calcLinearPlantProfiles(self, calc_mla=False):
         """
