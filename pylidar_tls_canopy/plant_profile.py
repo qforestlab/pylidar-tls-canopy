@@ -95,7 +95,7 @@ class Jupp2009:
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
     def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, sensor_height=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, query_str=None, pulse_filter=True):
         """
         Add a RIEGL scan position to the profile
         """
@@ -106,7 +106,7 @@ class Jupp2009:
                       'zenith','azimuth','target_count']
 
         pulses = {}
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str, pulse_filter=pulse_filter) as rxp:
             for col in pulse_cols:
                 pulses[col] = rxp.get_data(col, return_as_point_attribute=False)
             idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
@@ -147,7 +147,7 @@ class Jupp2009:
                 points['azimuth'][idx], method=method)
 
     def add_riegl_scan_position_scanline(self, rxp_file, transform_file, rdbx_file=None, sensor_height=None,
-        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
+        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None, pulse_filter=True):
         """
         Add a RIEGL scan position to the profile
 
@@ -162,7 +162,7 @@ class Jupp2009:
         print("Reading RXP and optionally RDBX")
 
         pulses = {}
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str, pulse_filter=pulse_filter) as rxp:
             for col in pulse_cols:
                 pulses[col] = rxp.get_data(col, return_as_point_attribute=False)
             idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
@@ -195,7 +195,7 @@ class Jupp2009:
             height = points['z'] - (self.ground_plane[1] * points['x'] +
                 self.ground_plane[2] * points['y'] + zoffset)
             
-        print("Filtering points")
+
 
         # filter points on scanline and scanline_idx of pulses to ensure alignment
         df_points = pd.DataFrame({'scanline': points["scanline"], 'scanline_idx': points["scanline_idx"]})

@@ -162,7 +162,7 @@ class RDBFile:
 
 
 class RXPFile:
-    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None, pulse_filter=True):
         self.filename = filename
         if transform_file is not None:
             self.transform = read_transform_file(transform_file)
@@ -173,7 +173,9 @@ class RXPFile:
         else:
             self.transform = None
         self.query_str = query_str
+        self.pulse_filter = pulse_filter
         self.read_file()
+        
 
     def __enter__(self):
         return self
@@ -216,32 +218,94 @@ class RXPFile:
         self.points = {}
         self.pulses = {}
         if self.query_str is not None:
-    
-            valid = self.run_query(points)
-            points = points[valid]
-           
-            target_count = np.repeat(pulses['target_count'], pulses['target_count'])
-            scanline = np.repeat(pulses['scanline'], pulses['target_count'])
-            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count']) 
-           
-            self.points['target_index'],new_target_count = reindex_targets(points['target_index'], 
-                target_count[valid], scanline[valid], scanline_idx[valid])
-
-            max_scanline_idx = np.max(pulses['scanline_idx'])
-            pulse_id = pulses['scanline'] * max_scanline_idx + pulses['scanline_idx']
-            point_id = scanline[valid] * max_scanline_idx + scanline_idx[valid]
             
-            pulse_sort_idx = np.argsort(pulse_id)
-            point_sort_idx = np.argsort(point_id)
-            first = (self.points['target_index'][point_sort_idx] == 1)
-            idx = np.searchsorted(pulse_id, point_id[point_sort_idx][first], sorter=pulse_sort_idx)
-            self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.uint8)         
-            self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first]
-             
-            self.points['valid'] = np.ones(np.count_nonzero(valid), dtype=bool)
+            if self.pulse_filter:
+                target_count_all = np.repeat(pulses['target_count'], pulses['target_count'])
+                scanline_all = np.repeat(pulses['scanline'], pulses['target_count'])
+                scanline_idx_all = np.repeat(pulses['scanline_idx'], pulses['target_count']) 
+                pulse_id_all     = np.repeat(pulses['pulse_id'],     pulses['target_count'])  # per-point pulse_id     
+                
+                idx0 = np.lexsort((points['target_index'], scanline_idx_all, scanline_all))
+
+                points          = points[idx0]
+                target_count_all = target_count_all[idx0]
+                scanline_all     = scanline_all[idx0]
+                scanline_idx_all = scanline_idx_all[idx0]
+                pulse_id_all     = pulse_id_all[idx0]
+                
+                valid = self.run_query(points)
+                valid_pulse_ids = np.unique(pulse_id_all[valid])
+
+                false_nohit_mask = (pulses['target_count'] > 0) & (~np.isin(pulses['pulse_id'], valid_pulse_ids))
+
+                pulse_valid = np.ones(pulses.shape[0], dtype=bool)
+                pulse_valid[false_nohit_mask] = False
+                print("False no-hit pulses:", np.count_nonzero(false_nohit_mask), "out of ", pulses.shape[0], "pulses")
+
+                # filter points once
+                points_f           = points[valid]
+                target_count_all_f = target_count_all[valid]
+                scanline_all_f     = scanline_all[valid]
+                scanline_idx_all_f = scanline_idx_all[valid]
+
+                # reindex once
+                new_ti, new_target_count = reindex_targets(points_f['target_index'],
+                                                        target_count_all_f,
+                                                        scanline_all_f,
+                                                        scanline_idx_all_f)
+                self.points['target_index'] = new_ti
+
+                # rebuild pulse target_count
+                max_scanline_idx = np.max(pulses['scanline_idx']) + 1
+                pulse_key = pulses['scanline'] * max_scanline_idx + pulses['scanline_idx']
+                point_key = scanline_all_f * max_scanline_idx + scanline_idx_all_f
+
+                pulse_sort_idx = np.argsort(pulse_key)
+                point_sort_idx = np.argsort(point_key)
+                
+                # locate the first surving return for each pulse
+                first = (self.points['target_index'][point_sort_idx] == 1)
+
+                j = np.searchsorted(pulse_key, point_key[point_sort_idx][first], sorter=pulse_sort_idx)
+                idx = pulse_sort_idx[j]
+                
+            
+                self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.int32)
+                self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first].astype(np.int32)
+
+                self.points['valid'] = np.ones(points_f.shape[0], dtype=bool)
+                self.pulses['valid'] = pulse_valid
+                
+                print("points kept:", np.count_nonzero(self.points['valid']), "out of ", points.shape[0], "points")
+                print("pulses kept:", np.count_nonzero(self.pulses['valid']), "out of ", pulses.shape[0], "pulses")
+            else:
+                valid = self.run_query(points)
+                points = points[valid]
+            
+                target_count = np.repeat(pulses['target_count'], pulses['target_count'])
+                scanline = np.repeat(pulses['scanline'], pulses['target_count'])
+                scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count']) 
+            
+                self.points['target_index'],new_target_count = reindex_targets(points['target_index'], 
+                    target_count[valid], scanline[valid], scanline_idx[valid])
+
+                max_scanline_idx = np.max(pulses['scanline_idx'])
+                pulse_id = pulses['scanline'] * max_scanline_idx + pulses['scanline_idx']
+                point_id = scanline[valid] * max_scanline_idx + scanline_idx[valid]
+                
+                pulse_sort_idx = np.argsort(pulse_id)
+                point_sort_idx = np.argsort(point_id)
+                first = (self.points['target_index'][point_sort_idx] == 1)
+                idx = np.searchsorted(pulse_id, point_id[point_sort_idx][first], sorter=pulse_sort_idx)
+                self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.uint8)         
+                self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first]
+                
+                self.points['valid'] = np.ones(np.count_nonzero(valid), dtype=bool)
+
         else:
             self.pulses['target_count'] = pulses['target_count']
             self.points['valid'] = np.ones(points.shape[0], dtype=bool)
+            self.pulses['valid'] = np.ones(pulses.shape[0], dtype=bool)
 
         if self.transform is None:
             if 'PITCH' in self.meta:
@@ -257,7 +321,8 @@ class RXPFile:
         else:
             _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(pulses['beam_direction_x'],
                 pulses['beam_direction_y'], pulses['beam_direction_z'])
-        self.pulses['valid'] = np.ones(pulses.shape[0], dtype=bool)
+        if 'valid' not in self.pulses:
+            self.pulses['valid'] = np.ones(pulses.shape[0], dtype=bool)
 
         if self.transform is not None:
             x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'], 
