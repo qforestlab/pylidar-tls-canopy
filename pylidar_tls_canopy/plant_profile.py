@@ -147,7 +147,7 @@ class Jupp2009:
                 points['azimuth'][idx], method=method)
 
     def add_riegl_scan_position_scanline(self, rxp_file, transform_file, rdbx_file=None, sensor_height=None,
-        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None, pulse_filter=True):
+        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None, pulse_filter=False, point_data=False):
         """
         Add a RIEGL scan position to the profile
 
@@ -242,7 +242,10 @@ class Jupp2009:
                 points[col] = points[col][idx]
             height = height[idx]
             
-        self.points = points
+            
+        if point_data:
+            print("Storing point data in object! Attention this may use a lot of memory!.")
+            self.points = points
 
         print("Adding pulses")
         self.add_shots(pulses['target_count'], pulses['zenith'],
