@@ -162,7 +162,7 @@ class RDBFile:
 
 
 class RXPFile:
-    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None, pulse_filter=True):
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None, pulse_filter=False):
         self.filename = filename
         if transform_file is not None:
             self.transform = read_transform_file(transform_file)
