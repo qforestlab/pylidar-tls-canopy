@@ -246,6 +246,14 @@ class Jupp2009:
         if point_data:
             print("Storing point data in object! Attention this may use a lot of memory!.")
             self.points = points
+            self.reflectance = np.min(points['reflectance']), np.max(points['reflectance'])
+            self.deviation = np.min(points['deviation']), np.max(points['deviation'])
+            self.range = np.min(points['range']), np.max(points['range'])
+        else:
+            self.reflectance = np.min(points['reflectance']), np.max(points['reflectance'])
+            self.deviation = np.min(points['deviation']), np.max(points['deviation'])
+            self.range = np.min(points['range']), np.max(points['range'])
+            
 
         print("Adding pulses")
         self.add_shots(pulses['target_count'], pulses['zenith'],
